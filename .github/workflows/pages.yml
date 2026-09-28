@@ -1,115 +1,37 @@
 name: Deploy to GitHub Pages
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
+
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
+
 jobs:
   deploy:
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Fix wheel reference and alignment
-        shell: python
-        run: |
-          from pathlib import Path
-          import re
-
-          p=Path('index.html')
-          s=p.read_text(encoding='utf-8')
-
-          ref=r'''function findWheelReference(){
- if(!model){wheelReference=null;return}
- const root=new T.Box3().setFromObject(model),size=root.getSize(new T.Vector3()),center=root.getCenter(new T.Vector3()),H=size.y||1,W=Math.max(size.x,size.z)||1;
- const named=[];
- model.traverse(o=>{
-   if(!o.isMesh)return;
-   const n=((o.name||'')+' '+(o.material?.name||'')).toLowerCase();
-   if(/wheel|caster|castor|roller|star.?base|wheel.?base|wheelbase/.test(n)){
-     const b=new T.Box3().setFromObject(o);if(!b.isEmpty())named.push(b);
-   }
- });
- let box;
- if(named.length){box=new T.Box3();named.forEach(b=>box.union(b));}
- else{
-   const target=W*.88;
-   box=new T.Box3(new T.Vector3(center.x-target/2,root.min.y,center.z-target/2),new T.Vector3(center.x+target/2,root.min.y+H*.18,center.z+target/2));
- }
- const rs=box.getSize(new T.Vector3());
- wheelReference={center:box.getCenter(new T.Vector3()),size:new T.Vector3(Math.max(rs.x,rs.z,W*.88),rs.y,Math.max(rs.x,rs.z,W*.88)),source:named.length?'primary named wheel/base assembly':'primary chair lower footprint',box:box};
-}
-function findWheels(){wheelMeshes=[];if(!model)return;model.traverse(o=>{if(o.isMesh&&/wheel|caster|castor|roller/i.test(o.name||''))wheelMeshes.push(o)})}
-'''
-
-          start=s.find('function findWheelReference(){')
-          end=s.find('function fit(){',start)
-          if start<0 or end<0: raise SystemExit('wheel reference block not found')
-          s=s[:start]+ref+s[end:]
-
-          place=r'''function placeWheel(slot){
- if(!model||!wheelGLB[slot])return;
- if(wheelGroup)scene.remove(wheelGroup);
- if(!wheelReference)findWheelReference();
- if(!wheelReference)return;
- const w=cloneWheel(wheelGLB[slot]);
- w.updateMatrixWorld(true);
- const wb0=new T.Box3().setFromObject(w),ws0=wb0.getSize(new T.Vector3());
- const target=Math.max(wheelReference.size.x,wheelReference.size.z);
- const source=Math.max(ws0.x,ws0.z)||1;
- // Uniform scale only: no independent axis stretching.
- w.scale.multiplyScalar(target/source);
- w.updateMatrixWorld(true);
- let wb=new T.Box3().setFromObject(w),wc=wb.getCenter(new T.Vector3());
- // Exact primary-chair center in X/Z.
- w.position.x+=wheelReference.center.x-wc.x;
- w.position.z+=wheelReference.center.z-wc.z;
- // Exact floor/base position in Y. Collision with the chair is allowed.
- wb.setFromObject(w);
- w.position.y+=wheelReference.box ? wheelReference.box.min.y-wb.min.y : 0;
- w.updateMatrixWorld(true);
- wheelGroup=new T.Group();wheelGroup.name='Wheel_Config_Assembly_'+slot;wheelGroup.add(w);scene.add(wheelGroup);
- findWheels();wheelMeshes.forEach(o=>o.visible=false);
- activeWheel=slot;
- $('wheelStatus').textContent='Wheel '+slot+' active — '+wheelName[slot]+'. Exact primary wheel/base footprint, center and floor position. Uniform scale only.';
- $('swap').textContent='SWAP WHEEL · '+(slot==='A'?'A → B':'B → A');
-}
-function loadWheel(slot,file){'''
-
-          pattern=r'function placeWheel\(slot\)\{.*?\}\nfunction loadWheel\(slot,file\)\{'
-          s,n=re.subn(pattern,place,s,count=1,flags=re.S)
-          if n!=1: raise SystemExit('placeWheel block not found')
-          p.write_text(s,encoding='utf-8')
-
-      - name: Commit wheel alignment fix
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add index.html
-          if ! git diff --cached --quiet; then
-            git commit -m "Apply exact primary wheel alignment"
-            git push
-          fi
-
       - name: Setup Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
-      - name: Upload artifact
+
+      - name: Upload site
         uses: actions/upload-pages-artifact@v3
         with:
           path: .
+
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
