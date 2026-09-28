@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   fix:
-    if: ${{ !contains(github.event.head_commit.message, 'Apply wheel alignment override v7') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -93,6 +92,7 @@ function showWheel(slot){
           marker='</script>'
           i=s.rfind(marker)
           if i<0: raise SystemExit('Could not locate closing script tag')
+          if 'FINAL_WHEEL_ALIGNMENT_V7_START' in s: raise SystemExit('unexpected marker state')
           s=s[:i]+override+s[i:]
           p.write_text(s,encoding='utf-8')
 
