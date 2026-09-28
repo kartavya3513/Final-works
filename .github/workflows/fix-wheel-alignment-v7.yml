@@ -9,145 +9,97 @@ permissions:
 
 jobs:
   fix:
-    if: ${{ !contains(github.event.head_commit.message, 'Fix wheel alignment v7') }}
+    if: ${{ !contains(github.event.head_commit.message, 'Apply wheel alignment override v7') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rewrite wheel alignment logic
+      - name: Apply deterministic wheel alignment override
         shell: python
         run: |
           from pathlib import Path
           import re
-
-          p = Path('index.html')
-          s = p.read_text(encoding='utf-8')
-
-          start = s.find('function findWheelReference(){')
-          end = s.find('function fit(){', start)
-          if start < 0 or end < 0:
-              raise SystemExit('Could not locate wheel reference functions')
-
-          block = r'''function findWheelReference(){
-            if(!model){wheelReference=null;return}
-            const rootBox=new T.Box3().setFromObject(model);
-            const rootSize=rootBox.getSize(new T.Vector3());
-            const rootCenter=rootBox.getCenter(new T.Vector3());
-            const H=rootSize.y||1;
-            const W=Math.max(rootSize.x,rootSize.z)||1;
-            const all=[];
-            model.traverse(o=>{
-              if(!o.isMesh||!o.geometry)return;
-              const n=((o.name||'')+' '+(o.material?.name||'')).toLowerCase();
-              if(/arm\\s*rest|armrest|back\\s*rest\\s*base|backrest\\s*base/.test(n))return;
-              const b=new T.Box3().setFromObject(o);
-              if(b.isEmpty())return;
-              const size=b.getSize(new T.Vector3());
-              const center=b.getCenter(new T.Vector3());
-              all.push({o,n,b,size,center});
-            });
-
-            // Prefer explicit wheel/base names when they exist.
-            let selected=all.filter(x=>/wheel|caster|castor|roller|wheelbase|wheel\\s*base|star\\s*base|five.?star|5.?star/.test(x.n));
-
-            // For the common case where the chair GLB is one combined mesh/object,
-            // use the entire LOW wheel/base region. This deliberately includes
-            // overlapping geometry and the gas-lift connection so the replacement
-            // is measured against the real primary chair footprint.
-            if(!selected.length){
-              const lowLimit=rootBox.min.y+H*0.42;
-              selected=all.filter(x=>{
-                if(x.center.y>lowLimit)return false;
-                const dx=x.center.x-rootCenter.x;
-                const dz=x.center.z-rootCenter.z;
-                const radial=Math.hypot(dx,dz);
-                const horizontal=Math.max(x.size.x,x.size.z);
-                return radial>W*0.055 || horizontal>W*0.12;
-              });
-            }
-
-            if(!selected.length){
-              wheelReference={
-                box:new T.Box3(
-                  new T.Vector3(rootCenter.x-W*.42,rootBox.min.y,rootCenter.z-W*.42),
-                  new T.Vector3(rootCenter.x+W*.42,rootBox.min.y+H*.20,rootCenter.z+W*.42)
-                ),
-                center:new T.Vector3(rootCenter.x,rootBox.min.y+H*.10,rootCenter.z),
-                size:new T.Vector3(W*.84,H*.20,W*.84),
-                source:'fallback lower chair footprint'
-              };
-              return;
-            }
-
-            const box=new T.Box3();
-            selected.forEach(x=>box.union(x.b));
-            const center=box.getCenter(new T.Vector3());
-            const size=box.getSize(new T.Vector3());
-            // Never allow a narrow detection to make the replacement smaller
-            // than the primary chair's actual lower footprint.
-            const targetFootprint=Math.max(size.x,size.z,W*.55);
-            wheelReference={box,center,size:new T.Vector3(targetFootprint,size.y,targetFootprint),source:'primary chair lower wheel/base footprint'};
-          }
-
-          function findWheels(){
-            wheelMeshes=[];
-            if(!model)return;
-            model.traverse(o=>{
-              if(o.isMesh && /wheel|caster|castor|roller/i.test(o.name||''))wheelMeshes.push(o);
-            });
-          }
-          '''
-
-          s = s[:start] + block + s[end:]
-
-          pattern = r"function showWheel\(slot\)\{.*?\}function loadWheel\(slot,file\)\{"
-          replacement = r'''function showWheel(slot){
-            if(!model||!wheelGLB[slot])return;
-            if(wheelGroup)scene.remove(wheelGroup);
-            if(!wheelReference)findWheelReference();
-
-            const w=cloneWheel(wheelGLB[slot]);
-            w.updateMatrixWorld(true);
-            const srcBox=new T.Box3().setFromObject(w);
-            const srcSize=srcBox.getSize(new T.Vector3());
-            const srcFootprint=Math.max(srcSize.x,srcSize.z)||1;
-            const targetFootprint=Math.max(wheelReference.size.x,wheelReference.size.z);
-
-            // Uniformly scale the COMPLETE imported wheel GLB until its footprint
-            // exactly matches the primary chair wheel/base footprint.
-            w.scale.multiplyScalar(targetFootprint/srcFootprint);
-            w.updateMatrixWorld(true);
-
-            // Exact center alignment in X/Z, then exact attachment-height alignment.
-            let b=new T.Box3().setFromObject(w);
-            let c=b.getCenter(new T.Vector3());
-            w.position.x += wheelReference.center.x-c.x;
-            w.position.z += wheelReference.center.z-c.z;
-            b.setFromObject(w);
-            w.position.y += wheelReference.box ? wheelReference.box.max.y-b.max.y : wheelReference.center.y-c.y;
-            w.updateMatrixWorld(true);
-
-            wheelGroup=new T.Group();
-            wheelGroup.name='Wheel_Config_Assembly_'+slot;
-            wheelGroup.add(w);
-            scene.add(wheelGroup);
-
-            // Hide the original named wheel objects if available. The replacement
-            // is intentionally allowed to overlap/collide with the primary model.
-            if(wheelMeshes.length)wheelMeshes.forEach(o=>o.visible=false);
-            activeWheel=slot;
-            $('wheelStatus').textContent='Wheel '+slot+' active — '+wheelName[slot]+'. Exact primary wheel/base footprint, center and attachment height used. Collision allowed.';
-            $('swap').textContent='SWAP WHEEL · '+(slot==='A'?'A → B':'B → A');
-          }function loadWheel(slot,file){'''
-          new, n = re.subn(pattern, replacement, s, count=1, flags=re.S)
-          if n != 1:
-              raise SystemExit('Could not locate showWheel()/loadWheel()')
-          p.write_text(new, encoding='utf-8')
+          p=Path('index.html')
+          s=p.read_text(encoding='utf-8')
+          s=re.sub(r'\n/\* FINAL_WHEEL_ALIGNMENT_V7_START \*/.*?/\* FINAL_WHEEL_ALIGNMENT_V7_END \*/\n','\n',s,flags=re.S)
+          override=r'''
+/* FINAL_WHEEL_ALIGNMENT_V7_START */
+function finalWheelReference(){
+  if(!model)return null;
+  const root=new T.Box3().setFromObject(model);
+  const size=root.getSize(new T.Vector3());
+  const center=root.getCenter(new T.Vector3());
+  const H=size.y||1;
+  const W=Math.max(size.x,size.z)||1;
+  const candidates=[];
+  model.traverse(o=>{
+    if(!o.isMesh)return;
+    const n=((o.name||'')+' '+(o.material?.name||'')).toLowerCase();
+    if(/arm\s*rest|armrest|back\s*rest\s*base|backrest\s*base/.test(n))return;
+    const b=new T.Box3().setFromObject(o);
+    if(b.isEmpty())return;
+    const c=b.getCenter(new T.Vector3());
+    const q=b.getSize(new T.Vector3());
+    if(/wheel|caster|castor|roller|star.?base|wheel.?base|wheelbase/.test(n)){
+      candidates.push({b,c,q,explicit:true,o});
+      return;
+    }
+    if(c.y<=root.min.y+H*.34 && Math.max(q.x,q.z)>=W*.08)candidates.push({b,c,q,explicit:false,o});
+  });
+  let refBox=null;
+  const explicit=candidates.filter(x=>x.explicit);
+  if(explicit.length){refBox=new T.Box3();explicit.forEach(x=>refBox.union(x.b));}
+  else{
+    const target=W*.88;
+    refBox=new T.Box3(new T.Vector3(center.x-target/2,root.min.y,center.z-target/2),new T.Vector3(center.x+target/2,root.min.y+H*.18,center.z+target/2));
+  }
+  const refCenter=refBox.getCenter(new T.Vector3());
+  const refSize=refBox.getSize(new T.Vector3());
+  const footprint=Math.max(refSize.x,refSize.z,W*.88);
+  return {root,center,refBox,refCenter,footprint};
+}
+function showWheel(slot){
+  if(!model||!wheelGLB[slot])return;
+  if(wheelGroup)scene.remove(wheelGroup);
+  const ref=finalWheelReference();
+  if(!ref){$('wheelStatus').textContent='Primary chair is not loaded.';return;}
+  const w=cloneWheel(wheelGLB[slot]);
+  w.updateMatrixWorld(true);
+  let b=new T.Box3().setFromObject(w);
+  const s=b.getSize(new T.Vector3());
+  const sourceFootprint=Math.max(s.x,s.z)||1;
+  const scale=ref.footprint/sourceFootprint;
+  w.scale.multiplyScalar(scale);
+  w.updateMatrixWorld(true);
+  b.setFromObject(w);
+  const c=b.getCenter(new T.Vector3());
+  w.position.x+=ref.center.x-c.x;
+  w.position.z+=ref.center.z-c.z;
+  b.setFromObject(w);
+  w.position.y+=ref.root.min.y-b.min.y;
+  w.updateMatrixWorld(true);
+  wheelGroup=new T.Group();
+  wheelGroup.name='Wheel_Config_Assembly_'+slot;
+  wheelGroup.add(w);
+  scene.add(wheelGroup);
+  findWheels();
+  if(wheelMeshes.length)wheelMeshes.forEach(o=>o.visible=false);
+  activeWheel=slot;
+  $('wheelStatus').textContent='Wheel '+slot+' active — '+wheelName[slot]+'. Matched to primary chair footprint, center and floor position. No manual wheel offset.';
+  $('swap').textContent='SWAP WHEEL · '+(slot==='A'?'A → B':'B → A');
+}
+/* FINAL_WHEEL_ALIGNMENT_V7_END */
+'''
+          marker='</script>'
+          i=s.rfind(marker)
+          if i<0: raise SystemExit('Could not locate closing script tag')
+          s=s[:i]+override+s[i:]
+          p.write_text(s,encoding='utf-8')
 
       - name: Commit fix
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add index.html
-          git diff --cached --quiet || git commit -m "Fix wheel alignment v7"
+          git diff --cached --quiet || git commit -m "Apply wheel alignment override v7"
           git push
